@@ -1,0 +1,12 @@
+@import 'react-leaflet-cluster/lib/assets/MarkerCluster.css';
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+
+
+
+body {
+  @apply bg-white text-gray-800;
+  font-family: 'Inter', sans-serif;
+}

@@ -1,0 +1,34 @@
+# OS files
+.DS_Store
+.DS_Store?
+._*
+
+# Backend static files
+backend/public/static/
+backend/static/
+backend/staticfiles/
+public/static/
+
+# Node modules
+node_modules/
+.next/
+out/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+backend/.env
+
+# Database
+*.sqlite3
+*.db
+
+# Python
+__pycache__/
+*.py[cod]
+venv/
+env/
+
+# Service account / credential files
+backend/**/*service-account*.json

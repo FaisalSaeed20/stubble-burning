@@ -1,0 +1,26 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*.so
+
+# Django stuff:
+*.log
+local_settings.py
+db.sqlite3
+.env
+
+# GEE / Google OAuth credentials
+credentials.json
+token.json
+gee-service-account*.json
+
+# VSCode settings
+.vscode/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+
+static/
+backend/static/

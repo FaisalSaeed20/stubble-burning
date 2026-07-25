@@ -1,0 +1,15 @@
+venv/
+env/
+__pycache__/
+*.pyc
+db.sqlite3
+staticfiles/
+static/
+temp_downloads/
+merged_geotiffs/
+.env
+credentials.json
+gee-service-account-key.json
+token.json
+*.zip
+.git/

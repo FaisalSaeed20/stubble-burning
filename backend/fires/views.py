@@ -1,6 +1,6 @@
 
 # fires/views.py
-from django.http import JsonResponse, HttpResponseRedirect
+from django.http import JsonResponse, HttpResponseRedirect, FileResponse
 from django.utils.dateparse import parse_date
 from django.conf import settings
 from django.views.decorators.csrf import csrf_exempt
@@ -68,6 +68,12 @@ def _num(x):
 
 # --- Tiles (served from a private GCS bucket via a short-lived signed URL) ---
 def serve_tile(request, z, x, y):
+    if not settings.GCS_BUCKET_NAME:
+        # Local dev fallback: no bucket configured, serve straight from disk.
+        tile_path = os.path.join(settings.BASE_DIR, "static", f"imgs_pak_punjab/{z}/{x}/{y}.png")
+        if os.path.exists(tile_path):
+            return FileResponse(open(tile_path, "rb"), content_type="image/png")
+        return JsonResponse({"error": "Tile not found"}, status=404)
     blob_path = f"{settings.GCS_TILES_PREFIX}/{z}/{x}/{y}.png"
     return HttpResponseRedirect(signed_tile_url(blob_path))
 
@@ -197,6 +203,13 @@ def serve_stage_tile(request, date, z, x, y):
     if not re.match(r"^\d{8}$", str(date)):
         return JsonResponse({"error": "Invalid date format. Expected YYYYMMDD."}, status=400)
 
+    if not settings.GCS_BUCKET_NAME:
+        # Local dev fallback: no bucket configured, serve straight from disk.
+        tile_path = os.path.join(settings.BASE_DIR, "static", "stage_tiles", str(date), str(z), str(x), f"{y}.png")
+        if os.path.exists(tile_path):
+            return FileResponse(open(tile_path, "rb"), content_type="image/png")
+        return JsonResponse({"error": "Stage tile not found"}, status=404)
+
     blob_path = f"{settings.GCS_STAGE_TILES_PREFIX}/{date}/{z}/{x}/{y}.png"
     return HttpResponseRedirect(signed_tile_url(blob_path))
 
@@ -208,7 +221,15 @@ def get_stage_dates(request):
     (populated by the stage-fetch pipeline) rather than a local directory
     listing."""
     try:
-        all_dates = list(StageTileDate.objects.values_list('date_str', flat=True))
+        if not settings.GCS_BUCKET_NAME:
+            # Local dev fallback: no bucket configured, scan disk like before.
+            stage_dir = os.path.join(settings.BASE_DIR, "static", "stage_tiles")
+            all_dates = sorted(
+                name for name in os.listdir(stage_dir)
+                if os.path.isdir(os.path.join(stage_dir, name)) and re.match(r"^\d{8}$", name)
+            ) if os.path.isdir(stage_dir) else []
+        else:
+            all_dates = list(StageTileDate.objects.values_list('date_str', flat=True))
 
         if not all_dates:
             return JsonResponse({'dates': [], 'years': {}, 'latest': None}, safe=False)

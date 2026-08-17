@@ -9,6 +9,7 @@ from django.urls import path
 from . import views
 import re
 urlpatterns = [
+    path('healthz/', views.healthz, name='healthz'),
     path('tiles/<int:z>/<int:x>/<int:y>.png', views.serve_tile, name='serve_tile'),
     path('fire-timeseries/', views.get_fire_timeseries, name='get_fire_timeseries'),
     path('api/districts/', views.get_districts, name='get_districts'),

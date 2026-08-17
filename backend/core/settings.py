@@ -64,6 +64,13 @@ CLOUD_SCHEDULER_TOKEN = os.environ.get('CLOUD_SCHEDULER_TOKEN', '')
 DEBUG = os.environ.get('DJANGO_DEBUG', 'True') == 'True'
 
 ALLOWED_HOSTS = os.environ.get('DJANGO_ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
+# Render's internal health-check probe hits the container directly (not via the
+# public hostname), so it must always be allowed regardless of what's configured.
+if os.environ.get('RENDER'):
+    ALLOWED_HOSTS += ['localhost', '127.0.0.1', '.onrender.com']
+    render_external_hostname = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
+    if render_external_hostname:
+        ALLOWED_HOSTS.append(render_external_hostname)
 
 # Cloud Run terminates TLS upstream and forwards over plain HTTP with this header.
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')

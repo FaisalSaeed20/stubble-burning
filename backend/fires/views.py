@@ -17,6 +17,13 @@ import re
 METRIC_KEYS = ["NDVI", "NDWI", "NBR", "NDRE", "VV", "VH"]
 
 
+def healthz(request):
+    """Trivial liveness check for Render's health probe -- no DB/GEE access,
+    so it can't fail just because migrations haven't run yet or a network
+    call is slow."""
+    return JsonResponse({"status": "ok"})
+
+
 def _check_scheduler_token(request):
     return (
         settings.CLOUD_SCHEDULER_TOKEN

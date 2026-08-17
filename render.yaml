@@ -5,6 +5,7 @@ services:
     plan: free
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
+    healthCheckPath: /healthz/
     envVars:
       - key: DJANGO_SECRET_KEY
         generateValue: true

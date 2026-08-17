@@ -38,6 +38,22 @@ class StageTileDate(models.Model):
     """
     date_str = models.CharField(max_length=8, unique=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    dominant_stage = models.PositiveSmallIntegerField(null=True, blank=True)
+    stage_pixel_counts = models.JSONField(null=True, blank=True)
 
     class Meta:
         ordering = ["date_str"]
+
+
+class RiceAreaEstimate(models.Model):
+    """A single at-risk-rice-cropland-area computation run (Hafizabad District).
+
+    Append-only, like StageTileDate -- read the latest row rather than
+    upserting a singleton, so historical estimates aren't lost.
+    """
+    hectares = models.FloatField()
+    season_year = models.IntegerField()
+    computed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-computed_at"]

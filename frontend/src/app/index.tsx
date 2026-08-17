@@ -3,14 +3,14 @@
 
 import dynamic from 'next/dynamic';
 
-const MapView = dynamic(() => import('../../components/MapView'), {
+const DashboardShell = dynamic(() => import('../../components/dashboard/DashboardShell'), {
   ssr: false,
 });
 
 export default function Home() {
   return (
     <main className="h-screen w-full">
-      <MapView />
+      <DashboardShell />
     </main>
   );
 }

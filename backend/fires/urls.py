@@ -12,6 +12,9 @@ urlpatterns = [
     path('tiles/<int:z>/<int:x>/<int:y>.png', views.serve_tile, name='serve_tile'),
     path('fire-timeseries/', views.get_fire_timeseries, name='get_fire_timeseries'),
     path('api/districts/', views.get_districts, name='get_districts'),
+    path('dashboard-summary/', views.get_dashboard_summary, name='get_dashboard_summary'),
+    path('district-summary/', views.get_district_summary, name='get_district_summary'),
+    path('incidents/', views.get_incidents, name='get_incidents'),
         # --- NEW URLS ---
     path('heatmap-tiles/<str:gas_type>/<int:z>/<int:x>/<int:y>.png', views.serve_heatmap_tile, name='serve_heatmap_tile'),
     path('stage-tiles/<int:date>/<int:z>/<int:x>/<int:y>.png', views.serve_stage_tile, name='serve_stage_tile'),

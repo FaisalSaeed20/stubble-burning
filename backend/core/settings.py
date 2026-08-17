@@ -48,10 +48,14 @@ GEE_DSS_TRAINING_TABLE_ASSET_ID = os.environ.get(
 )
 FIRE_LOOKBACK_DAYS = int(os.environ.get('FIRE_LOOKBACK_DAYS', '3'))
 
-# --- Google Cloud Storage (tile persistence) ---
-GCS_BUCKET_NAME = os.environ.get('GCS_BUCKET_NAME', '')
-GCS_TILES_PREFIX = 'imgs_pak_punjab'
-GCS_STAGE_TILES_PREFIX = 'stage_tiles'
+# --- Backblaze B2 (S3-compatible object storage, tile persistence) ---
+B2_BUCKET_NAME = os.environ.get('B2_BUCKET_NAME', '')
+B2_ENDPOINT_URL = os.environ.get('B2_ENDPOINT_URL', '')
+B2_KEY_ID = os.environ.get('B2_KEY_ID', '')
+B2_APPLICATION_KEY = os.environ.get('B2_APPLICATION_KEY', '')
+B2_REGION = os.environ.get('B2_REGION', '')
+B2_TILES_PREFIX = 'imgs_pak_punjab'
+B2_STAGE_TILES_PREFIX = 'stage_tiles'
 
 # --- Shared secret for Cloud Scheduler-triggered endpoints ---
 CLOUD_SCHEDULER_TOKEN = os.environ.get('CLOUD_SCHEDULER_TOKEN', '')

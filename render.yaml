@@ -1,0 +1,55 @@
+services:
+  - type: web
+    name: stubble-burning-backend
+    runtime: docker
+    plan: free
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    healthCheckPath: /api/dashboard-summary/
+    envVars:
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
+      - key: DJANGO_DEBUG
+        value: "False"
+      - key: DJANGO_ALLOWED_HOSTS
+        sync: false
+      - key: DJANGO_CORS_ALLOWED_ORIGINS
+        sync: false
+      - key: DJANGO_CSRF_TRUSTED_ORIGINS
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: GEE_PROJECT_ID
+        sync: false
+      - key: GEE_SERVICE_ACCOUNT_EMAIL
+        sync: false
+      - key: GEE_KEY_FILE_PATH
+        value: /etc/secrets/gee-service-account-key.json
+      - key: GEE_OAUTH_CREDENTIALS_PATH
+        value: /etc/secrets/credentials.json
+      - key: GEE_OAUTH_TOKEN_PATH
+        value: /etc/secrets/token.json
+      - key: B2_BUCKET_NAME
+        sync: false
+      - key: B2_ENDPOINT_URL
+        sync: false
+      - key: B2_KEY_ID
+        sync: false
+      - key: B2_APPLICATION_KEY
+        sync: false
+      - key: B2_REGION
+        sync: false
+      - key: CLOUD_SCHEDULER_TOKEN
+        generateValue: true
+      - key: GEE_RICE_MASK_ASSET_ID
+        sync: false
+      - key: GEE_DSS_TRAINING_TABLE_ASSET_ID
+        sync: false
+
+# Background jobs run outside Render (to stay on the free tier):
+# - fetch_gee_data (fast): triggered via a free external cron (e.g. cron-job.org)
+#   POSTing to https://<this-service>.onrender.com/trigger-fetch/
+#   with header X-Cloud-Scheduler-Token: <CLOUD_SCHEDULER_TOKEN value>
+# - run_stage_fetcher (15-70 min): run manually/on-demand from your own machine
+#   with DATABASE_URL and B2_* env vars pointed at production, e.g.:
+#   cd backend && source venv/bin/activate && python manage.py run_stage_fetcher

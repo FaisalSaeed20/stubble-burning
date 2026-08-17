@@ -13,15 +13,18 @@ from django.conf import settings
 
 # --- Shared GEE helpers ---
 from .gee_assets.common import get_hafizabad_aoi
-from .models import StageTileDate
-from .gcs_utils import upload_png
+from .blob_storage import upload_png
+# Note: StageTileDate (a Django model) is deliberately NOT imported at module
+# level. This module is re-imported fresh inside each ProcessPoolExecutor
+# worker subprocess (spawned, not forked, on macOS/Windows), which never
+# runs django.setup() -- a module-level Django model import there crashes
+# every worker with AppRegistryNotReady. It's imported lazily instead, inside
+# the two functions below that actually run in the main process.
 
 # --- Google API Imports ---
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
+from google.auth.transport.requests import Request, AuthorizedSession
 
 # --- Tiling Imports ---
 from rio_tiler.io import Reader
@@ -42,7 +45,7 @@ CREDENTIALS_PATH = settings.GEE_OAUTH_CREDENTIALS_PATH
 GDRIVE_EXPORT_FOLDER = settings.GEE_DRIVE_EXPORT_FOLDER
 TEMP_DIR = os.path.join(settings.BASE_DIR, 'temp_downloads')
 MERGED_DIR = os.path.join(settings.BASE_DIR, 'merged_geotiffs')
-FINAL_TILES_GCS_PREFIX = settings.GCS_STAGE_TILES_PREFIX
+FINAL_TILES_GCS_PREFIX = settings.B2_STAGE_TILES_PREFIX
 
 # --- Tiling Configuration ---
 ZOOM_LEVELS = range(6, 14)
@@ -135,20 +138,30 @@ def merge_geotiffs_in_directory(input_dir, output_dir, date_str):
     return output_file
 
 def _process_tile_worker(args):
-    input_geotiff, tile, gcs_prefix = args
+    input_geotiff, tile, gcs_prefix, date_str = args
     try:
         with Reader(input_geotiff) as reader:
             img_data, mask = reader.tile(tile.x, tile.y, tile.z, tilesize=256, resampling_method="nearest")
         if not img_data.any():
             return "skipped"
         png_data = ImageData(img_data, mask).render(img_format="PNG", colormap=COLOR_MAP)
-        blob_path = f"{gcs_prefix}/{tile.z}/{tile.x}/{tile.y}.png"
-        upload_png(blob_path, png_data)
+        if settings.B2_BUCKET_NAME:
+            blob_path = f"{gcs_prefix}/{tile.z}/{tile.x}/{tile.y}.png"
+            upload_png(blob_path, png_data)
+        else:
+            # Local dev fallback: no bucket configured, write straight to
+            # disk (matches views.py's read-side fallback for the same case).
+            tile_dir = os.path.join(settings.BASE_DIR, "static", "stage_tiles", date_str, str(tile.z), str(tile.x))
+            os.makedirs(tile_dir, exist_ok=True)
+            with open(os.path.join(tile_dir, f"{tile.y}.png"), "wb") as f:
+                f.write(png_data)
         return "success"
     except Exception:
         return f"failed: Tile {tile}\n{traceback.format_exc()}"
 
 def generate_tiles_for_file(geotiff_path, date_str):
+    from .models import StageTileDate
+
     gcs_prefix = f"{FINAL_TILES_GCS_PREFIX}/{date_str}"
     if StageTileDate.objects.filter(date_str=date_str).exists():
         print(f"Skipping tiling for '{date_str}': StageTileDate record already exists.")
@@ -159,7 +172,7 @@ def generate_tiles_for_file(geotiff_path, date_str):
         bounds = src.bounds
         for zoom in ZOOM_LEVELS:
             all_tiles_to_process.extend(mercantile.tiles(*bounds, zooms=[zoom]))
-    tasks = [(geotiff_path, tile, gcs_prefix) for tile in all_tiles_to_process]
+    tasks = [(geotiff_path, tile, gcs_prefix, date_str) for tile in all_tiles_to_process]
     print(f"Generating {len(tasks)} tiles using {MAX_WORKERS} workers...")
     with concurrent.futures.ProcessPoolExecutor(max_workers=MAX_WORKERS) as executor:
         results = list(executor.map(_process_tile_worker, tasks))
@@ -177,11 +190,20 @@ def generate_tiles_for_file(geotiff_path, date_str):
 
 def fetch_and_process_latest_stage_map():
     """Main function to run the entire data fetching and processing pipeline."""
+    from .models import StageTileDate
+
     try:
         print("Authenticating as user for GEE and Google Drive...")
         creds = _get_user_credentials()
         ee.Initialize(project=GEE_PROJECT_ID, credentials=creds)
-        drive_service = build('drive', 'v3', credentials=creds)
+        # The googleapiclient/httplib2 stack was repeatedly hanging/timing out
+        # on the Drive file-search and download calls specifically (while GEE
+        # calls over the same network succeeded fine for many minutes) --
+        # traced to a stuck IPv6 connection attempt. requests/urllib3 (via
+        # AuthorizedSession, same as the rest of this network-facing code)
+        # doesn't have that problem, so Drive access goes through that
+        # instead of googleapiclient's own HTTP stack.
+        drive_session = AuthorizedSession(creds)
         print("✅ GEE authentication successful.")
 
         target_date = datetime.date.today() - datetime.timedelta(days=2)
@@ -213,6 +235,24 @@ def fetch_and_process_latest_stage_map():
         print(f"Generating stage map for {target_date_str_gee}...")
         stage_map_to_export = generate_stage_map(target_date_str_gee, classifier, area_of_interest, rice_mask, prediction_year)
 
+        dominant_stage = None
+        stage_pixel_counts = None
+        try:
+            print("Computing stage pixel-count histogram...")
+            histogram = stage_map_to_export.reduceRegion(
+                reducer=ee.Reducer.frequencyHistogram(),
+                geometry=area_of_interest.geometry(),
+                scale=10,
+                maxPixels=1e13,
+                bestEffort=True,
+            ).get('stage').getInfo()
+            if histogram:
+                stage_pixel_counts = {int(k): v for k, v in histogram.items()}
+                dominant_stage = max(stage_pixel_counts, key=stage_pixel_counts.get)
+                print(f"  Dominant stage: {dominant_stage} (counts: {stage_pixel_counts})")
+        except Exception as hist_err:
+            print(f"⚠️ Could not compute stage histogram: {hist_err}")
+
         # --- UPDATED LINE: Changed filename for clarity ---
         export_filename = f'Hafizabad_Stages_{target_date_str_file}'
         print(f"Starting GEE export task: '{export_filename}'...")
@@ -229,8 +269,10 @@ def fetch_and_process_latest_stage_map():
         task.start()
 
         while task.active():
-            elapsed_time = int(time.time() - task.status()['start_timestamp_ms'] / 1000)
-            print(f"  Polling task: {task.status()['state']} (elapsed: {elapsed_time}s)")
+            status = task.status()
+            start_ms = status.get('start_timestamp_ms') or 0
+            elapsed_time = int(time.time() - start_ms / 1000) if start_ms else 0
+            print(f"  Polling task: {status['state']} (elapsed: {elapsed_time}s)")
             time.sleep(60)
         
         if task.status()['state'] != 'COMPLETED':
@@ -241,9 +283,14 @@ def fetch_and_process_latest_stage_map():
         print("Searching for exported file(s) in Google Drive...")
         os.makedirs(TEMP_DIR, exist_ok=True)
         q_filter = f"name contains '{export_filename}' and mimeType='image/tiff'"
-        response = drive_service.files().list(q=q_filter, spaces='drive', fields='files(id, name)').execute()
-        files_to_download = response.get('files', [])
-        
+        list_resp = drive_session.get(
+            'https://www.googleapis.com/drive/v3/files',
+            params={'q': q_filter, 'spaces': 'drive', 'fields': 'files(id, name)'},
+            timeout=60,
+        )
+        list_resp.raise_for_status()
+        files_to_download = list_resp.json().get('files', [])
+
         if not files_to_download:
             raise Exception(f"Could not find exported files for '{export_filename}' in Drive folder '{GDRIVE_EXPORT_FOLDER}'.")
 
@@ -251,19 +298,28 @@ def fetch_and_process_latest_stage_map():
         for file_part in files_to_download:
             file_id, file_name = file_part.get('id'), file_part.get('name')
             local_path = os.path.join(TEMP_DIR, file_name)
-            request = drive_service.files().get_media(fileId=file_id)
-            with open(local_path, "wb") as f:
-                downloader = MediaIoBaseDownload(f, request)
-                done = False
-                while not done:
-                    status, done = downloader.next_chunk()
-                    print(f"  Downloading '{file_name}': {int(status.progress() * 100)}%.")
+            with drive_session.get(
+                f'https://www.googleapis.com/drive/v3/files/{file_id}',
+                params={'alt': 'media'},
+                stream=True,
+                timeout=60,
+            ) as file_resp:
+                file_resp.raise_for_status()
+                with open(local_path, "wb") as f:
+                    for chunk in file_resp.iter_content(chunk_size=8 * 1024 * 1024):
+                        f.write(chunk)
+            print(f"  Downloaded '{file_name}'.")
         
         print("✅ Download complete.")
 
         merged_geotiff_path = merge_geotiffs_in_directory(TEMP_DIR, MERGED_DIR, target_date_str_file)
         generate_tiles_for_file(merged_geotiff_path, target_date_str_file)
-        
+
+        if dominant_stage is not None:
+            StageTileDate.objects.filter(date_str=target_date_str_file).update(
+                dominant_stage=dominant_stage, stage_pixel_counts=stage_pixel_counts
+            )
+
         print(f"\n🎉 Successfully completed full pipeline for {target_date_str_file}.")
 
     except Exception as e:

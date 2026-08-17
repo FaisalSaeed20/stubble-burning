@@ -6,6 +6,7 @@ from django.core.management.base import BaseCommand
 
 from fires.gee_assets.build_rice_mask import build_rice_mask, compute_rice_area_hectares, export_rice_mask
 from fires.gee_assets.common import init_ee
+from fires.models import RiceAreaEstimate
 
 
 class Command(BaseCommand):
@@ -23,6 +24,7 @@ class Command(BaseCommand):
 
         hectares = compute_rice_area_hectares(rice_mask, aoi)
         self.stdout.write(f"Candidate rice area for {options['year']}: {hectares:,.1f} ha")
+        RiceAreaEstimate.objects.create(hectares=hectares, season_year=options['year'])
 
         if options['dry_run']:
             self.stdout.write(self.style.SUCCESS('Dry run complete, nothing exported.'))

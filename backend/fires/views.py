@@ -7,7 +7,8 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 from rest_framework.decorators import api_view
 from .models import FirePoint, FireObservation, StageTileDate
-from .gcs_utils import signed_tile_url
+from .blob_storage import signed_tile_url
+from .dashboard import build_dashboard_summary, build_district_summary, list_incidents
 import os
 import math
 from django.http import JsonResponse
@@ -66,15 +67,15 @@ def _num(x):
     except (TypeError, ValueError):
         return None
 
-# --- Tiles (served from a private GCS bucket via a short-lived signed URL) ---
+# --- Tiles (served from a private B2 bucket via a short-lived signed URL) ---
 def serve_tile(request, z, x, y):
-    if not settings.GCS_BUCKET_NAME:
+    if not settings.B2_BUCKET_NAME:
         # Local dev fallback: no bucket configured, serve straight from disk.
         tile_path = os.path.join(settings.BASE_DIR, "static", f"imgs_pak_punjab/{z}/{x}/{y}.png")
         if os.path.exists(tile_path):
             return FileResponse(open(tile_path, "rb"), content_type="image/png")
         return JsonResponse({"error": "Tile not found"}, status=404)
-    blob_path = f"{settings.GCS_TILES_PREFIX}/{z}/{x}/{y}.png"
+    blob_path = f"{settings.B2_TILES_PREFIX}/{z}/{x}/{y}.png"
     return HttpResponseRedirect(signed_tile_url(blob_path))
 
 # --- DB-backed version of your CSV endpoint ---
@@ -187,6 +188,53 @@ def get_districts(request):
     return JsonResponse(geojson_data)
 
 
+@api_view(['GET'])
+def get_dashboard_summary(request):
+    try:
+        window_days = int(request.GET.get('days', 30))
+    except (TypeError, ValueError):
+        window_days = 30
+    window_days = max(1, min(window_days, 365))
+    return JsonResponse(build_dashboard_summary(window_days=window_days))
+
+
+@api_view(['GET'])
+def get_district_summary(request):
+    district = (request.GET.get('district') or '').strip()
+    if not district:
+        return JsonResponse({"error": "district query param is required"}, status=400)
+    try:
+        window_days = int(request.GET.get('days', 7))
+    except (TypeError, ValueError):
+        window_days = 7
+    try:
+        trend_days = int(request.GET.get('trend_days', 90))
+    except (TypeError, ValueError):
+        trend_days = 90
+    window_days = max(1, min(window_days, 365))
+    trend_days = max(1, min(trend_days, 365))
+
+    summary = build_district_summary(district, window_days=window_days, trend_days=trend_days)
+    if summary is None:
+        return JsonResponse({"error": f"Unknown district: {district}"}, status=404)
+    return JsonResponse(summary)
+
+
+@api_view(['GET'])
+def get_incidents(request):
+    district = (request.GET.get('district') or '').strip() or None
+    start = (request.GET.get('start') or '').strip() or None
+    end = (request.GET.get('end') or '').strip() or None
+    try:
+        limit = int(request.GET.get('limit', 500))
+    except (TypeError, ValueError):
+        limit = 500
+    limit = max(1, min(limit, 2000))
+
+    incidents = list_incidents(district_name=district, start=start, end=end, limit=limit)
+    return JsonResponse({"incidents": incidents, "total": len(incidents), "start": start, "end": end})
+
+
 
 
 
@@ -199,18 +247,18 @@ def get_districts(request):
 # -------------------- NEW CODE --------------------
 
 def serve_stage_tile(request, date, z, x, y):
-    """Serves a single growth-stage map tile via a signed GCS URL."""
+    """Serves a single growth-stage map tile via a signed B2 URL."""
     if not re.match(r"^\d{8}$", str(date)):
         return JsonResponse({"error": "Invalid date format. Expected YYYYMMDD."}, status=400)
 
-    if not settings.GCS_BUCKET_NAME:
+    if not settings.B2_BUCKET_NAME:
         # Local dev fallback: no bucket configured, serve straight from disk.
         tile_path = os.path.join(settings.BASE_DIR, "static", "stage_tiles", str(date), str(z), str(x), f"{y}.png")
         if os.path.exists(tile_path):
             return FileResponse(open(tile_path, "rb"), content_type="image/png")
         return JsonResponse({"error": "Stage tile not found"}, status=404)
 
-    blob_path = f"{settings.GCS_STAGE_TILES_PREFIX}/{date}/{z}/{x}/{y}.png"
+    blob_path = f"{settings.B2_STAGE_TILES_PREFIX}/{date}/{z}/{x}/{y}.png"
     return HttpResponseRedirect(signed_tile_url(blob_path))
 
 
@@ -221,7 +269,7 @@ def get_stage_dates(request):
     (populated by the stage-fetch pipeline) rather than a local directory
     listing."""
     try:
-        if not settings.GCS_BUCKET_NAME:
+        if not settings.B2_BUCKET_NAME:
             # Local dev fallback: no bucket configured, scan disk like before.
             stage_dir = os.path.join(settings.BASE_DIR, "static", "stage_tiles")
             all_dates = sorted(
@@ -332,7 +380,6 @@ import ee
 
 # --- Google Auth Imports (Copied from stage_fetcher.py) ---
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 
 # --- Model Imports ---
@@ -343,7 +390,6 @@ from .pdf_report import generate_fire_pdf
 GEE_PROJECT_ID = settings.GEE_PROJECT_ID
 SCOPES = ['https://www.googleapis.com/auth/earthengine', 'https://www.googleapis.com/auth/drive']
 TOKEN_PATH = settings.GEE_OAUTH_TOKEN_PATH
-CREDENTIALS_PATH = settings.GEE_OAUTH_CREDENTIALS_PATH
 
 METRIC_KEYS = ["NDVI", "NDWI", "NBR", "NDRE", "VV", "VH"]
 
@@ -385,10 +431,15 @@ def _get_user_credentials():
             print("Refreshing GEE user credentials...")
             creds.refresh(Request())
         else:
-            # This will fail on a server. This flow is for local development.
-            print("Running local server auth for GEE...")
-            flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_PATH, SCOPES)
-            creds = flow.run_local_server(port=0)
+            # This view runs inside an HTTP request handler -- there is no
+            # browser to complete an interactive consent flow with, so
+            # run_local_server() would just hang the request forever waiting
+            # for a callback that can never arrive. Fail fast instead.
+            raise RuntimeError(
+                "GEE user credentials are missing or unrefreshable (no valid token.json). "
+                "Run `python manage.py run_stage_fetcher` from a terminal once to "
+                "(re)authenticate interactively before using this endpoint."
+            )
         # Save the refreshed credentials for next run. On Cloud Run, TOKEN_PATH
         # is a read-only Secret Manager mount, so persisting the refresh can
         # fail -- that's fine, the in-memory creds are still valid for this
@@ -452,8 +503,8 @@ def serve_heatmap_tile(request, gas_type, z, x, y):
         gee_url = tile_url.format(x=x, y=y, z=z)
         
         # 5. Fetch the tile from GEE and stream it back
-        response = requests.get(gee_url, stream=True)
-        
+        response = requests.get(gee_url, stream=True, timeout=30)
+
         if not response.ok:
             return HttpResponse(f"GEE tile server error: {response.status_code}", status=response.status_code)
 

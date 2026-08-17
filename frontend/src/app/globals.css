@@ -1,5 +1,4 @@
 @import "tailwindcss";
-@import 'react-leaflet-cluster/lib/assets/MarkerCluster.css';
 :root {
   --background: #ffffff;
   --foreground: #171717;

@@ -413,7 +413,7 @@ const [selectedDistrict, setSelectedDistrict] = useState<string>('Hafizabad Dist
               data={s2ChartData}
               options={{
                 responsive: true,
-                plugins: { legend: { position: 'bottom' }, fireLine: { fireDate: selectedPoint?.fire_date } },
+                plugins: { legend: { position: 'bottom' }, fireLine: { fireDate: selectedPoint?.fire_date } } as any,
                 scales: { y: { title: { display: true, text: 'Index Value' } } },
               }}
               plugins={[fireLinePlugin as any]}
@@ -449,7 +449,7 @@ const [selectedDistrict, setSelectedDistrict] = useState<string>('Hafizabad Dist
               data={s1ChartData}
               options={{
                 responsive: true,
-                plugins: { legend: { position: 'bottom' }, fireLine: { fireDate: selectedPoint?.fire_date } },
+                plugins: { legend: { position: 'bottom' }, fireLine: { fireDate: selectedPoint?.fire_date } } as any,
                 scales: { y: { title: { display: true, text: 'Decibels (dB)' } } },
               }}
               plugins={[fireLinePlugin as any]}

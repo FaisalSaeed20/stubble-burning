@@ -312,6 +312,16 @@ def fetch_and_process_latest_stage_map():
         
         print("✅ Download complete.")
 
+        # The GEE export + Drive download above can take 20+ minutes with zero
+        # DB activity. Managed Postgres providers (e.g. Neon's pooled endpoint)
+        # silently drop idle connections well within that window, and this is
+        # a single long-lived process rather than a series of web requests, so
+        # Django's normal CONN_MAX_AGE-based recycling (tied to the
+        # request_finished signal) never gets a chance to kick in. Force a
+        # fresh connection before the first DB write after the idle gap.
+        from django.db import connection
+        connection.close()
+
         merged_geotiff_path = merge_geotiffs_in_directory(TEMP_DIR, MERGED_DIR, target_date_str_file)
         generate_tiles_for_file(merged_geotiff_path, target_date_str_file)
 

@@ -384,6 +384,7 @@ import requests # Make sure you've run: pip install requests
 
 # --- GEE Imports ---
 import ee
+from .gee_assets.common import get_punjab_aoi
 
 # --- Google Auth Imports (Copied from stage_fetcher.py) ---
 from google.oauth2.credentials import Credentials
@@ -484,22 +485,13 @@ def serve_heatmap_tile(request, gas_type, z, x, y):
         end_date = ee.Date(datetime.datetime.utcnow())
         start_date = end_date.advance(-7, 'day')
 
-        # --- NEW: Define Area of Interest (AOI) ---
-        adminLevel2 = ee.FeatureCollection("FAO/GAUL/2015/level2")
-        hafizabad = adminLevel2.filter(ee.Filter.And(
-            ee.Filter.eq('ADM0_NAME', 'Pakistan'),
-            ee.Filter.eq('ADM1_NAME', 'Punjab'),
-            ee.Filter.eq('ADM2_NAME', 'Hafizabad District')
-        ))
-        # --- END NEW ---
-
-        # 2. Create the GEE Image and CLIP IT
+        # 2. Create the GEE Image and clip it to Punjab
         image = (
             ee.ImageCollection(config['collection'])
             .filterDate(start_date, end_date)
             .select(config['band'])
             .mean()
-            .clip(hafizabad)  # <-- THIS IS THE NEW LINE
+            .clip(get_punjab_aoi())
         )
         
         # 3. Get the GEE Tile URL

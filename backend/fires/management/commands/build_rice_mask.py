@@ -10,7 +10,7 @@ from fires.models import RiceAreaEstimate
 
 
 class Command(BaseCommand):
-    help = 'Builds (and optionally exports) the rice-cropland mask for Hafizabad District.'
+    help = 'Builds (and optionally exports) the rice-cropland mask for Punjab.'
 
     def add_arguments(self, parser):
         parser.add_argument('--year', type=int, default=datetime.datetime.now().year)

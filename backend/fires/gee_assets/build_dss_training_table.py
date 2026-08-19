@@ -156,10 +156,10 @@ def _find_transplant_dates(aoi, sample_points, season_year):
 
 def build_dss_training_table(season_year):
     """Returns an ee.FeatureCollection ready to inspect (.size()/.aggregate_*) or export."""
-    from .common import get_hafizabad_aoi
+    from .common import get_punjab_aoi
     from django.conf import settings
 
-    aoi = get_hafizabad_aoi().geometry()
+    aoi = get_punjab_aoi().geometry()
     rice_mask = ee.Image(settings.GEE_RICE_MASK_ASSET_ID).eq(1)
 
     sample_points = rice_mask.selfMask().sample(
@@ -218,7 +218,7 @@ def build_dss_training_table(season_year):
 def export_dss_training_table(training_table, asset_id):
     task = ee.batch.Export.table.toAsset(
         collection=training_table,
-        description='dss_training_table_hafizabad',
+        description='dss_training_table_punjab',
         assetId=asset_id,
     )
     return poll_task(task, label=f'export DSS training table -> {asset_id}')

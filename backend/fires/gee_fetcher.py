@@ -4,7 +4,7 @@ import ee
 import datetime
 from django.conf import settings
 from .models import FirePoint, FireObservation
-from .gee_assets.common import get_hafizabad_aoi, init_ee
+from .gee_assets.common import get_punjab_aoi, init_ee
 from django.db import transaction, IntegrityError
 from django.core.exceptions import ObjectDoesNotExist
 
@@ -33,7 +33,7 @@ def fetch_and_load_new_fires(season_year=None, start_date=None, end_date=None):
         # --- Phase 1: Configuration (Translated from JS) ---
         # ==============================================================================
         RICE_MAP_ASSET_PATH = settings.GEE_RICE_MASK_ASSET_ID
-        aoi = get_hafizabad_aoi().geometry()
+        aoi = get_punjab_aoi().geometry()
         S2_BANDS = ['NDVI', 'NDWI', 'NBR', 'NDRE']
         S1_BANDS = ['VV', 'VH']
         ALL_BANDS = S2_BANDS + S1_BANDS

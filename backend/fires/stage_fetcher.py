@@ -12,7 +12,7 @@ import concurrent.futures
 from django.conf import settings
 
 # --- Shared GEE helpers ---
-from .gee_assets.common import get_hafizabad_aoi
+from .gee_assets.common import get_punjab_aoi
 from .blob_storage import upload_png
 # Note: StageTileDate (a Django model) is deliberately NOT imported at module
 # level. This module is re-imported fresh inside each ProcessPoolExecutor
@@ -121,10 +121,10 @@ def merge_geotiffs_in_directory(input_dir, output_dir, date_str):
     if not tiff_parts:
         raise Exception("No .tif files found in the directory to merge.")
     if len(tiff_parts) == 1:
-        merged_file_path = os.path.join(output_dir, f"Hafizabad_Stages_Merged_{date_str}.tif")
+        merged_file_path = os.path.join(output_dir, f"Punjab_Stages_Merged_{date_str}.tif")
         shutil.move(tiff_parts[0], merged_file_path)
         return merged_file_path
-    output_file = os.path.join(output_dir, f"Hafizabad_Stages_Merged_{date_str}.tif")
+    output_file = os.path.join(output_dir, f"Punjab_Stages_Merged_{date_str}.tif")
     print(f"Merging {len(tiff_parts)} GeoTIFF parts into '{output_file}'...") 
     sources_to_merge = [rasterio.open(fp) for fp in tiff_parts]
     mosaic, out_trans = merge(sources_to_merge)
@@ -218,7 +218,7 @@ def fetch_and_process_latest_stage_map():
             return
 
         print("Defining area of interest and loading assets...")
-        area_of_interest = get_hafizabad_aoi()
+        area_of_interest = get_punjab_aoi()
 
         training_table = ee.FeatureCollection(settings.GEE_DSS_TRAINING_TABLE_ASSET_ID)
         rice_map = ee.Image(settings.GEE_RICE_MASK_ASSET_ID)
@@ -253,8 +253,7 @@ def fetch_and_process_latest_stage_map():
         except Exception as hist_err:
             print(f"⚠️ Could not compute stage histogram: {hist_err}")
 
-        # --- UPDATED LINE: Changed filename for clarity ---
-        export_filename = f'Hafizabad_Stages_{target_date_str_file}'
+        export_filename = f'Punjab_Stages_{target_date_str_file}'
         print(f"Starting GEE export task: '{export_filename}'...")
         task = ee.batch.Export.image.toDrive(
             image=stage_map_to_export, 

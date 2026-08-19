@@ -46,7 +46,7 @@ class StageTileDate(models.Model):
 
 
 class RiceAreaEstimate(models.Model):
-    """A single at-risk-rice-cropland-area computation run (Hafizabad District).
+    """A single at-risk-rice-cropland-area computation run (province-wide, Punjab).
 
     Append-only, like StageTileDate -- read the latest row rather than
     upserting a singleton, so historical estimates aren't lost.

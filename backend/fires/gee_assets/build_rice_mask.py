@@ -16,7 +16,7 @@ to tune the two constants below after inspecting --dry-run output.
 """
 import ee
 
-from .common import get_hafizabad_aoi, poll_task
+from .common import get_punjab_aoi, poll_task
 
 CROPLAND_CLASS = 40  # ESA WorldCover v200 "Cropland"
 VH_FLOOD_THRESHOLD_DB = -20.0  # VH below this during the transplant window suggests flooding
@@ -31,7 +31,7 @@ def _mask_s2_clouds(image):
 
 def build_rice_mask(season_year):
     """Returns (rice_mask_image, aoi_geometry). Caller decides dry-run stats vs. export."""
-    aoi = get_hafizabad_aoi().geometry()
+    aoi = get_punjab_aoi().geometry()
 
     cropland = (
         ee.ImageCollection('ESA/WorldCover/v200')
@@ -84,7 +84,7 @@ def compute_rice_area_hectares(rice_mask, aoi):
 def export_rice_mask(rice_mask, aoi, asset_id):
     task = ee.batch.Export.image.toAsset(
         image=rice_mask.toByte(),
-        description='rice_mask_hafizabad',
+        description='rice_mask_punjab',
         assetId=asset_id,
         region=aoi,
         scale=10,

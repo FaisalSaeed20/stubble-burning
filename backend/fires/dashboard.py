@@ -39,9 +39,14 @@ STAGE_COLORS = {
     5: "#8b4513",
 }
 
-# Every existing GEE asset (rice mask, DSS training table, stage classifier)
-# is scoped to this district only -- see fires/gee_assets/common.py.
-HAFIZABAD_DISTRICT_NAME = "Hafizabad"
+# Rice mask / crop-stage classification now runs province-wide (see
+# fires/gee_assets/common.py), but the histogram/hectares numbers are a
+# single province-wide aggregate -- reduceRegion runs over the whole AOI in
+# one call, not broken out per-district. Per-district breakdowns of those two
+# stats would need reduceRegions grouped by district polygon instead; until
+# that's built, get_district_at_risk_hectares/get_district_crop_stage_distribution
+# below return None for every district (including what used to be the
+# Hafizabad-only special case).
 
 
 @lru_cache(maxsize=1)
@@ -230,14 +235,21 @@ def get_district_trend(polygon, days=90):
 
 
 def get_district_at_risk_hectares(district_name):
-    if district_name != HAFIZABAD_DISTRICT_NAME:
-        return None
-    return get_at_risk_hectares()
+    # Rice-mask hectares is a single province-wide reduceRegion result, not
+    # broken out per district yet -- see the module docstring note above.
+    return None
 
 
 def get_district_crop_stage_distribution(district_name):
-    if district_name != HAFIZABAD_DISTRICT_NAME:
-        return None
+    # Same limitation as get_district_at_risk_hectares above: the pixel
+    # histogram is province-wide, not per-district.
+    return None
+
+
+def get_province_crop_stage_distribution():
+    """Province-wide crop-stage breakdown -- what get_district_crop_stage_distribution
+    used to compute when the AOI was Hafizabad-only (a single district happened
+    to equal the whole AOI back then)."""
     latest = StageTileDate.objects.exclude(stage_pixel_counts__isnull=True).order_by("-date_str").first()
     if not latest or not latest.stage_pixel_counts:
         return None

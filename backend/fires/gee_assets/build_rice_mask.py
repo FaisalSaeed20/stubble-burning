@@ -13,6 +13,18 @@ a canopy), this gives a defensible dev-scope rice mask.
 There is no ground truth available to validate VH_FLOOD_THRESHOLD_DB /
 NDVI_CANOPY_THRESHOLD against -- treat this as an approximate v1 and expect
 to tune the two constants below after inspecting --dry-run output.
+
+v2 note: a province-wide dry run came back at ~3.65M ha against an official
+estimate of ~1.7-2.2M ha for Punjab -- a single-pass "was VH below threshold
+at any point in a 2.5-month window" flood check was almost certainly picking
+up ordinary monsoon-flooded non-rice fields, not just deliberate paddy
+transplanting. Two changes address that: (1) the transplant window is
+narrowed to when Punjab rice transplanting actually concentrates rather than
+a broad May-mid-July span that includes a lot of pre-monsoon/early-monsoon
+noise, and (2) the flood signal now has to persist across multiple
+Sentinel-1 passes instead of triggering on a single dip, since real paddy
+flooding is sustained for weeks while transient rain-flooding of other
+fields typically isn't.
 """
 import ee
 
@@ -20,6 +32,7 @@ from .common import get_punjab_aoi, poll_task
 
 CROPLAND_CLASS = 40  # ESA WorldCover v200 "Cropland"
 VH_FLOOD_THRESHOLD_DB = -20.0  # VH below this during the transplant window suggests flooding
+MIN_FLOOD_PERSISTENCE_HITS = 2  # require the VH dip on at least this many separate S1 passes
 NDVI_CANOPY_THRESHOLD = 0.55  # NDVI above this during the canopy window suggests a real crop, not open water
 
 
@@ -41,7 +54,11 @@ def build_rice_mask(season_year):
         .clip(aoi)
     )
 
-    transplant_start, transplant_end = f'{season_year}-05-01', f'{season_year}-07-15'
+    # Narrowed from the original May 1 - Jul 15 span: that included over a
+    # month of pre-monsoon/early-monsoon weeks where flooding is more likely
+    # to be rain rather than deliberate transplanting. Punjab rice
+    # transplanting concentrates in June through early July.
+    transplant_start, transplant_end = f'{season_year}-06-01', f'{season_year}-07-10'
     s1_transplant = (
         ee.ImageCollection('COPERNICUS/S1_GRD')
         .filterBounds(aoi)
@@ -52,7 +69,12 @@ def build_rice_mask(season_year):
         .select('VH')
         .map(lambda img: img.focal_median(**{'radius': 50, 'units': 'meters'}))
     )
-    vh_min = s1_transplant.min().clip(aoi)
+    # Persistence check: count how many separate passes each pixel was below
+    # the flood threshold on, rather than just taking the single deepest dip
+    # across the whole window. Sustained flooding (paddy) vs. a transient
+    # rain-flooded field (most other crops) should separate out here.
+    flood_hit_count = s1_transplant.map(lambda img: img.lt(VH_FLOOD_THRESHOLD_DB)).sum().clip(aoi)
+    persistent_flood = flood_hit_count.gte(MIN_FLOOD_PERSISTENCE_HITS)
 
     canopy_start, canopy_end = f'{season_year}-08-01', f'{season_year}-09-30'
     s2_canopy = (
@@ -66,7 +88,7 @@ def build_rice_mask(season_year):
 
     rice_mask = (
         cropland
-        .And(vh_min.lt(VH_FLOOD_THRESHOLD_DB))
+        .And(persistent_flood)
         .And(ndvi_max.gt(NDVI_CANOPY_THRESHOLD))
         .rename('rice')
         .selfMask()

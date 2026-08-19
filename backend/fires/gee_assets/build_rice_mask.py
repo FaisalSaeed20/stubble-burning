@@ -88,8 +88,10 @@ def compute_rice_area_hectares(rice_mask, aoi):
     area_m2 = rice_mask.multiply(ee.Image.pixelArea()).reduceRegion(
         reducer=ee.Reducer.sum(), geometry=aoi, scale=20, maxPixels=1e10, bestEffort=True
     )
+    # Export.table.toAsset rejects features with null geometry -- the
+    # geometry itself is meaningless here, only the property value matters.
     result_fc = ee.FeatureCollection(
-        [ee.Feature(None, {'hectares': ee.Number(area_m2.get('rice')).divide(10000)})]
+        [ee.Feature(ee.Geometry.Point([0, 0]), {'hectares': ee.Number(area_m2.get('rice')).divide(10000)})]
     )
 
     scratch_asset_id = f'projects/{settings.GEE_PROJECT_ID}/assets/_scratch_rice_area_hectares'

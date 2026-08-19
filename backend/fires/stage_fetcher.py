@@ -252,7 +252,11 @@ def fetch_and_process_latest_stage_map():
                 maxPixels=1e13,
                 bestEffort=True,
             ).get('stage')
-            result_fc = ee.FeatureCollection([ee.Feature(None, {'histogram': histogram_number})])
+            # Export.table.toAsset rejects features with null geometry -- the
+            # geometry itself is meaningless here, only the property value matters.
+            result_fc = ee.FeatureCollection(
+                [ee.Feature(ee.Geometry.Point([0, 0]), {'histogram': histogram_number})]
+            )
             scratch_asset_id = f'projects/{GEE_PROJECT_ID}/assets/_scratch_stage_histogram'
             try:
                 ee.data.deleteAsset(scratch_asset_id)

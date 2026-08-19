@@ -12,7 +12,7 @@ import concurrent.futures
 from django.conf import settings
 
 # --- Shared GEE helpers ---
-from .gee_assets.common import get_punjab_aoi
+from .gee_assets.common import get_punjab_aoi, poll_task
 from .blob_storage import upload_png
 # Note: StageTileDate (a Django model) is deliberately NOT imported at module
 # level. This module is re-imported fresh inside each ProcessPoolExecutor
@@ -239,13 +239,34 @@ def fetch_and_process_latest_stage_map():
         stage_pixel_counts = None
         try:
             print("Computing stage pixel-count histogram...")
-            histogram = stage_map_to_export.reduceRegion(
+            # A direct .getInfo() here worked fine over the old Hafizabad-only
+            # AOI, but times out ("Computation timed out") over a province-
+            # wide area -- GEE's interactive-compute cluster has a time limit
+            # that a full-Punjab reduceRegion blows through. Route it through
+            # the batch cluster instead (async export + poll), same fix as
+            # build_rice_mask.compute_rice_area_hectares.
+            histogram_number = stage_map_to_export.reduceRegion(
                 reducer=ee.Reducer.frequencyHistogram(),
                 geometry=area_of_interest.geometry(),
                 scale=10,
                 maxPixels=1e13,
                 bestEffort=True,
-            ).get('stage').getInfo()
+            ).get('stage')
+            result_fc = ee.FeatureCollection([ee.Feature(None, {'histogram': histogram_number})])
+            scratch_asset_id = f'projects/{GEE_PROJECT_ID}/assets/_scratch_stage_histogram'
+            try:
+                ee.data.deleteAsset(scratch_asset_id)
+            except ee.EEException:
+                pass
+            hist_task = ee.batch.Export.table.toAsset(
+                collection=result_fc, description='stage_histogram_scratch', assetId=scratch_asset_id
+            )
+            poll_task(hist_task, label='compute stage histogram (batch)')
+            histogram = ee.FeatureCollection(scratch_asset_id).first().get('histogram').getInfo()
+            try:
+                ee.data.deleteAsset(scratch_asset_id)
+            except ee.EEException:
+                pass
             if histogram:
                 stage_pixel_counts = {int(k): v for k, v in histogram.items()}
                 dominant_stage = max(stage_pixel_counts, key=stage_pixel_counts.get)

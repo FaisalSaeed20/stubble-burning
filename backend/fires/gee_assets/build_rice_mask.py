@@ -75,10 +75,39 @@ def build_rice_mask(season_year):
 
 
 def compute_rice_area_hectares(rice_mask, aoi):
+    """Runs the area sum as an async batch export + poll rather than a
+    synchronous .getInfo() call. A direct .getInfo() works fine over a small
+    AOI (e.g. the old Hafizabad-only scope) but a province-wide composite
+    over months of Sentinel-1/2 imagery exceeds GEE's interactive-compute
+    time limit ("Computation timed out") even though the batch cluster
+    handles the identical computation without issue -- same class of fix as
+    export_rice_mask/export_dss_training_table below, just for a scalar
+    result instead of a raster/table."""
+    from django.conf import settings
+
     area_m2 = rice_mask.multiply(ee.Image.pixelArea()).reduceRegion(
         reducer=ee.Reducer.sum(), geometry=aoi, scale=20, maxPixels=1e10, bestEffort=True
     )
-    return ee.Number(area_m2.get('rice')).divide(10000).getInfo()
+    result_fc = ee.FeatureCollection(
+        [ee.Feature(None, {'hectares': ee.Number(area_m2.get('rice')).divide(10000)})]
+    )
+
+    scratch_asset_id = f'projects/{settings.GEE_PROJECT_ID}/assets/_scratch_rice_area_hectares'
+    try:
+        ee.data.deleteAsset(scratch_asset_id)
+    except ee.EEException:
+        pass
+    task = ee.batch.Export.table.toAsset(
+        collection=result_fc, description='rice_area_hectares_scratch', assetId=scratch_asset_id
+    )
+    poll_task(task, label='compute rice area hectares (batch)')
+
+    hectares = ee.FeatureCollection(scratch_asset_id).first().get('hectares').getInfo()
+    try:
+        ee.data.deleteAsset(scratch_asset_id)
+    except ee.EEException:
+        pass
+    return hectares
 
 
 def export_rice_mask(rice_mask, aoi, asset_id):

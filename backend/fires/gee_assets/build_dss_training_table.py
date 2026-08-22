@@ -156,11 +156,11 @@ def _find_transplant_dates(aoi, sample_points, season_year):
 
 def build_dss_training_table(season_year):
     """Returns an ee.FeatureCollection ready to inspect (.size()/.aggregate_*) or export."""
-    from .common import get_punjab_aoi
+    from .common import get_punjab_aoi, get_rice_mask_image
     from django.conf import settings
 
     aoi = get_punjab_aoi().geometry()
-    rice_mask = ee.Image(settings.GEE_RICE_MASK_ASSET_ID).eq(1)
+    rice_mask = get_rice_mask_image(settings.GEE_RICE_MASK_ASSET_ID).eq(1)
 
     sample_points = rice_mask.selfMask().sample(
         region=aoi, scale=30, numPixels=NUM_SAMPLE_POINTS, seed=42, geometries=True

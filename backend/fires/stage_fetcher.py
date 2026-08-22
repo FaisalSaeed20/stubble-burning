@@ -12,7 +12,7 @@ import concurrent.futures
 from django.conf import settings
 
 # --- Shared GEE helpers ---
-from .gee_assets.common import get_punjab_aoi, poll_task
+from .gee_assets.common import get_punjab_aoi, get_rice_mask_image, poll_task
 from .blob_storage import upload_png
 # Note: StageTileDate (a Django model) is deliberately NOT imported at module
 # level. This module is re-imported fresh inside each ProcessPoolExecutor
@@ -221,7 +221,7 @@ def fetch_and_process_latest_stage_map():
         area_of_interest = get_punjab_aoi()
 
         training_table = ee.FeatureCollection(settings.GEE_DSS_TRAINING_TABLE_ASSET_ID)
-        rice_map = ee.Image(settings.GEE_RICE_MASK_ASSET_ID)
+        rice_map = get_rice_mask_image(settings.GEE_RICE_MASK_ASSET_ID)
         rice_mask = rice_map.eq(1)
         BANDS = ['NDVI', 'NDWI', 'VH', 'VV', 'VH_VV_ratio', 'day_of_year', 'days_since_season_start']
         LABEL = 'DSS'

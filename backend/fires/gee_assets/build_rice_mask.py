@@ -28,7 +28,7 @@ fields typically isn't.
 """
 import ee
 
-from .common import get_punjab_aoi, poll_task
+from .common import district_asset_slug, get_punjab_aoi, get_punjab_district_names, poll_task, poll_tasks
 
 CROPLAND_CLASS = 40  # ESA WorldCover v200 "Cropland"
 VH_FLOOD_THRESHOLD_DB = -20.0  # VH below this during the transplant window suggests flooding
@@ -144,3 +144,48 @@ def export_rice_mask(rice_mask, aoi, asset_id):
         maxPixels=1e13,
     )
     return poll_task(task, label=f'export rice mask -> {asset_id}')
+
+
+def export_rice_mask_by_district(rice_mask, base_asset_id):
+    """Exports the rice mask as one asset per Punjab district instead of a
+    single province-wide export. A single ~87x-larger-than-Hafizabad export
+    got stuck in RUNNING for an extended period with no visible progress on
+    GEE's free-tier batch queue -- each individual district export is much
+    closer in size to the Hafizabad pilot (which reliably completed), and
+    running all of them as concurrent tasks means the wall-clock cost is
+    closer to one district's export time than 36x it.
+
+    Returns the list of resulting asset IDs (whether or not each one
+    actually succeeded -- callers should check the returned per-task
+    statuses from poll_tasks for that)."""
+    district_names = get_punjab_district_names()
+    aoi_fc = get_punjab_aoi()
+
+    tasks_by_label = {}
+    asset_ids = {}
+    for name in district_names:
+        slug = district_asset_slug(name)
+        asset_id = f'{base_asset_id}_{slug}'
+        asset_ids[name] = asset_id
+        district_geom = aoi_fc.filter(ee.Filter.eq('ADM2_NAME', name)).geometry()
+        try:
+            ee.data.deleteAsset(asset_id)
+        except ee.EEException:
+            pass
+        tasks_by_label[name] = ee.batch.Export.image.toAsset(
+            image=rice_mask.toByte(),
+            description=f'rice_mask_{slug}',
+            assetId=asset_id,
+            region=district_geom,
+            scale=10,
+            maxPixels=1e13,
+        )
+
+    results = poll_tasks(tasks_by_label)
+
+    failed = {name: status for name, status in results.items() if status['state'] != 'COMPLETED'}
+    if failed:
+        print(f"⚠️ {len(failed)} district export(s) did not complete: {list(failed.keys())}")
+
+    succeeded = [asset_ids[name] for name in results if results[name]['state'] == 'COMPLETED']
+    return succeeded

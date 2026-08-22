@@ -4,7 +4,7 @@ import ee
 import datetime
 from django.conf import settings
 from .models import FirePoint, FireObservation
-from .gee_assets.common import get_punjab_aoi, init_ee
+from .gee_assets.common import get_punjab_aoi, get_rice_mask_image, init_ee
 from django.db import transaction, IntegrityError
 from django.core.exceptions import ObjectDoesNotExist
 
@@ -116,7 +116,7 @@ def fetch_and_load_new_fires(season_year=None, start_date=None, end_date=None):
 
         allNewFirePoints = viirsFires.map(getFirePointsWithDate).flatten()
         
-        riceMap = ee.Image(RICE_MAP_ASSET_PATH)
+        riceMap = get_rice_mask_image(RICE_MAP_ASSET_PATH)
         newFiresOnRice = riceMap.eq(1).reduceRegions(
             collection=allNewFirePoints, 
             reducer=ee.Reducer.firstNonNull(), 

@@ -334,7 +334,13 @@ def fetch_and_process_latest_stage_map():
                 f'https://www.googleapis.com/drive/v3/files/{file_id}',
                 params={'alt': 'media'},
                 stream=True,
-                timeout=60,
+                # Province-scale export file parts are much larger than the
+                # Hafizabad-only pilot's -- a 60s read timeout was too tight
+                # and killed a download partway through on a large part,
+                # losing already-downloaded parts too (cleanup ran on any
+                # exception). 300s gives large chunks enough room on a slow
+                # connection without waiting forever on a genuinely dead one.
+                timeout=300,
             ) as file_resp:
                 file_resp.raise_for_status()
                 with open(local_path, "wb") as f:

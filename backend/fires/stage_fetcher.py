@@ -245,18 +245,21 @@ def fetch_and_process_latest_stage_map():
             # that a full-Punjab reduceRegion blows through. Route it through
             # the batch cluster instead (async export + poll), same fix as
             # build_rice_mask.compute_rice_area_hectares.
-            histogram_number = stage_map_to_export.reduceRegion(
+            histogram_dict = ee.Dictionary(stage_map_to_export.reduceRegion(
                 reducer=ee.Reducer.frequencyHistogram(),
                 geometry=area_of_interest.geometry(),
                 scale=10,
                 maxPixels=1e13,
                 bestEffort=True,
-            ).get('stage')
-            # Export.table.toAsset rejects features with null geometry -- the
-            # geometry itself is meaningless here, only the property value matters.
-            result_fc = ee.FeatureCollection(
-                [ee.Feature(ee.Geometry.Point([0, 0]), {'histogram': histogram_number})]
-            )
+            ).get('stage'))
+            # Export.table.toAsset can't encode a Dictionary as a feature
+            # property (only simple types like numbers/strings) -- unpack
+            # into one property per stage instead, since stages are always
+            # a fixed 1-5 (see generate_stage_map's classification above).
+            # Export.table.toAsset also rejects features with null geometry;
+            # the geometry itself is meaningless here, only the properties matter.
+            props = {f'stage_{i}': histogram_dict.get(ee.String(str(i)), 0) for i in range(1, 6)}
+            result_fc = ee.FeatureCollection([ee.Feature(ee.Geometry.Point([0, 0]), props)])
             scratch_asset_id = f'projects/{GEE_PROJECT_ID}/assets/_scratch_stage_histogram'
             try:
                 ee.data.deleteAsset(scratch_asset_id)
@@ -266,13 +269,18 @@ def fetch_and_process_latest_stage_map():
                 collection=result_fc, description='stage_histogram_scratch', assetId=scratch_asset_id
             )
             poll_task(hist_task, label='compute stage histogram (batch)')
-            histogram = ee.FeatureCollection(scratch_asset_id).first().get('histogram').getInfo()
+            row = ee.FeatureCollection(scratch_asset_id).first().toDictionary().getInfo()
             try:
                 ee.data.deleteAsset(scratch_asset_id)
             except ee.EEException:
                 pass
+            histogram = {
+                int(key.split('_')[1]): value
+                for key, value in row.items()
+                if key.startswith('stage_') and value
+            }
             if histogram:
-                stage_pixel_counts = {int(k): v for k, v in histogram.items()}
+                stage_pixel_counts = histogram
                 dominant_stage = max(stage_pixel_counts, key=stage_pixel_counts.get)
                 print(f"  Dominant stage: {dominant_stage} (counts: {stage_pixel_counts})")
         except Exception as hist_err:

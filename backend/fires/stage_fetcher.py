@@ -125,11 +125,23 @@ def merge_geotiffs_in_directory(input_dir, output_dir, date_str):
         shutil.move(tiff_parts[0], merged_file_path)
         return merged_file_path
     output_file = os.path.join(output_dir, f"Punjab_Stages_Merged_{date_str}.tif")
-    print(f"Merging {len(tiff_parts)} GeoTIFF parts into '{output_file}'...") 
+    print(f"Merging {len(tiff_parts)} GeoTIFF parts into '{output_file}'...")
     sources_to_merge = [rasterio.open(fp) for fp in tiff_parts]
     mosaic, out_trans = merge(sources_to_merge)
     out_meta = sources_to_merge[0].meta.copy()
-    out_meta.update({"driver": "GTiff", "height": mosaic.shape[1], "width": mosaic.shape[2], "transform": out_trans, "crs": sources_to_merge[0].crs, "compress": "lzw"})
+    out_meta.update({
+        "driver": "GTiff", "height": mosaic.shape[1], "width": mosaic.shape[2],
+        "transform": out_trans, "crs": sources_to_merge[0].crs, "compress": "lzw",
+        # Without internal tiling, GDAL writes one full-width strip per row --
+        # reading a single 256x256 output tile from a province-scale raster
+        # then forces a read of the entire row width for every row touched.
+        # With 4 parallel workers all doing that against a multi-GB raster on
+        # an 8GB machine, this reliably OOM-kills a worker
+        # (BrokenProcessPool) partway through tiling. Internal 256x256
+        # blocks make each worker's read proportional to the output tile
+        # size instead of the raster's full width.
+        "tiled": True, "blockxsize": 256, "blockysize": 256,
+    })
     with rasterio.open(output_file, "w", **out_meta) as dest:
         dest.write(mosaic)
     for src in sources_to_merge:

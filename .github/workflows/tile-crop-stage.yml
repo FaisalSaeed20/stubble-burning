@@ -2,22 +2,17 @@ name: Tile crop-stage raster from scratch
 
 # Merges + tiles an already-exported crop-stage GeoTIFF (its raw parts
 # uploaded to a B2 scratch prefix ahead of time) and writes the resulting
-# tiles + DB row. Exists because this step is memory-heavy enough (a
+# tiles + DB row, computing the dominant-stage histogram itself via Earth
+# Engine. Exists because the merge+tile step is memory-heavy enough (a
 # multi-GB province-scale raster) to reliably exhaust RAM on a local
-# laptop; GitHub's runners have more headroom to spare for a one-off job
-# like this.
+# laptop; GitHub's runners have dedicated headroom for a one-off job like
+# this.
 on:
   workflow_dispatch:
     inputs:
       date_str:
         description: "Date string matching the scratch prefix, e.g. 20260823"
         required: true
-      dominant_stage:
-        description: "Dominant stage (1-5), optional"
-        required: false
-      stage_pixel_counts_json:
-        description: 'Stage pixel-count histogram as JSON, e.g. {"1": 123, "2": 456}, optional'
-        required: false
 
 jobs:
   tile:
@@ -33,19 +28,24 @@ jobs:
         working-directory: backend
         run: pip install -r requirements.txt
 
+      - name: Write GEE service account key
+        working-directory: backend
+        run: echo '${{ secrets.GEE_SERVICE_ACCOUNT_KEY_JSON }}' > gee-service-account-key.json
+
       - name: Merge, tile, and upload
         working-directory: backend
         env:
           DJANGO_SECRET_KEY: ${{ secrets.DJANGO_SECRET_KEY }}
           DJANGO_DEBUG: "False"
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          GEE_PROJECT_ID: ${{ secrets.GEE_PROJECT_ID }}
+          GEE_SERVICE_ACCOUNT_EMAIL: ${{ secrets.GEE_SERVICE_ACCOUNT_EMAIL }}
+          GEE_KEY_FILE_PATH: gee-service-account-key.json
+          GEE_RICE_MASK_ASSET_ID: ${{ secrets.GEE_RICE_MASK_ASSET_ID }}
+          GEE_DSS_TRAINING_TABLE_ASSET_ID: ${{ secrets.GEE_DSS_TRAINING_TABLE_ASSET_ID }}
           B2_BUCKET_NAME: ${{ secrets.B2_BUCKET_NAME }}
           B2_ENDPOINT_URL: ${{ secrets.B2_ENDPOINT_URL }}
           B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
           B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
           B2_REGION: ${{ secrets.B2_REGION }}
-        run: |
-          python scripts/ci_tile_from_scratch.py \
-            "${{ inputs.date_str }}" \
-            "${{ inputs.dominant_stage }}" \
-            '${{ inputs.stage_pixel_counts_json }}'
+        run: python scripts/ci_tile_from_scratch.py "${{ inputs.date_str }}"

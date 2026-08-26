@@ -1,22 +1,24 @@
 """
 Finishes a crop-stage pipeline run from already-exported raw GeoTIFF parts
 sitting in a B2 scratch prefix, instead of running the memory-heavy
-merge+tile step on a local machine.
+merge+tile step on a local machine. Also computes the dominant_stage/
+pixel-histogram itself via Earth Engine (service account auth) -- no
+manually-typed values needed.
 
 Why this exists: merging+tiling a province-scale raster (multi-GB) with
 several parallel workers reliably exhausts RAM on an 8GB laptop (a fixed
 bug in merge_geotiffs_in_directory's output layout made this worse, but
 even with that fixed, a laptop also running a browser/IDE/etc. has much
-less headroom than a dedicated CI runner). This script re-does just the
-download-from-scratch/merge/tile/DB-write steps, meant to run in GitHub
-Actions (or any machine with several GB of free RAM) instead.
+less headroom than a dedicated CI runner). This script re-does the
+histogram/download-from-scratch/merge/tile/DB-write steps, meant to run in
+GitHub Actions (or any machine with several GB of free RAM) instead.
 
 Usage: set the env vars below, then run
-    python backend/scripts/ci_tile_from_scratch.py <date_str> [dominant_stage] [stage_pixel_counts_json]
+    python backend/scripts/ci_tile_from_scratch.py <date_str>
 e.g.
-    python backend/scripts/ci_tile_from_scratch.py 20260823 2 '{"1": 7577210.55, "2": 201056498.10, "4": 15469565.57}'
+    python backend/scripts/ci_tile_from_scratch.py 20260823
 """
-import json
+import datetime
 import os
 import sys
 
@@ -27,19 +29,35 @@ os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'core.settings')
 django.setup()
 
 import boto3
-
-from fires.stage_fetcher import TEMP_DIR, MERGED_DIR, merge_geotiffs_in_directory, generate_tiles_for_file
-from fires.models import StageTileDate
 from django.conf import settings
+
+from fires.gee_assets.common import init_ee
+from fires.stage_fetcher import (
+    TEMP_DIR,
+    MERGED_DIR,
+    build_classifier_and_stage_map,
+    compute_stage_histogram,
+    merge_geotiffs_in_directory,
+    generate_tiles_for_file,
+)
+from fires.models import StageTileDate
 
 
 def main():
     date_str = sys.argv[1]
-    dominant_stage = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2] else None
-    stage_pixel_counts = json.loads(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else None
+    target_date_str_gee = datetime.datetime.strptime(date_str, '%Y%m%d').strftime('%Y-%m-%d')
+    prediction_year = date_str[:4]
 
     scratch_prefix = f'scratch/punjab_stages_{date_str}/'
     os.makedirs(TEMP_DIR, exist_ok=True)
+
+    print("Authenticating with GEE (service account)...")
+    init_ee()
+
+    print(f"Rebuilding classifier + stage map for {target_date_str_gee} (cheap, lazy graph)...")
+    area_of_interest, stage_map_to_export = build_classifier_and_stage_map(target_date_str_gee, prediction_year)
+
+    dominant_stage, stage_pixel_counts = compute_stage_histogram(stage_map_to_export, area_of_interest)
 
     s3 = boto3.client(
         's3',

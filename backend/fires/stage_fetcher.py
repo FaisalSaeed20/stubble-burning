@@ -115,6 +115,78 @@ def generate_stage_map(map_date, classifier, area_of_interest, rice_mask, predic
     ).rename('stage')
     return stage_map.updateMask(rice_mask).rename('stage').byte()
 
+def build_classifier_and_stage_map(target_date_str_gee, prediction_year):
+    """Rebuilds the trained classifier + stage-map ee.Image graph for a given
+    date. Cheap to call repeatedly (lazy graph construction; the only real
+    compute is classifier.train(), which is fast) -- shared between the main
+    pipeline and the CI recovery script (scripts/ci_tile_from_scratch.py) so
+    a stuck/OOM-killed run can be resumed without re-deriving this by hand."""
+    area_of_interest = get_punjab_aoi()
+    training_table = ee.FeatureCollection(settings.GEE_DSS_TRAINING_TABLE_ASSET_ID)
+    rice_map = get_rice_mask_image(settings.GEE_RICE_MASK_ASSET_ID)
+    rice_mask = rice_map.eq(1)
+    BANDS = ['NDVI', 'NDWI', 'VH', 'VV', 'VH_VV_ratio', 'day_of_year', 'days_since_season_start']
+    LABEL = 'DSS'
+
+    training_data = training_table.filter(ee.Filter.notNull(BANDS + [LABEL])).select(BANDS + [LABEL])
+    classifier_params = {'numberOfTrees': 150, 'minLeafPopulation': 10, 'maxNodes': 128, 'bagFraction': 0.5, 'seed': 42}
+    classifier = ee.Classifier.smileRandomForest(**classifier_params).train(features=training_data, classProperty=LABEL, inputProperties=BANDS)
+    stage_map_to_export = generate_stage_map(target_date_str_gee, classifier, area_of_interest, rice_mask, prediction_year)
+    return area_of_interest, stage_map_to_export
+
+
+def compute_stage_histogram(stage_map_to_export, area_of_interest):
+    """Returns (dominant_stage, stage_pixel_counts) or (None, None) on
+    failure. Runs as an async batch export + poll rather than a synchronous
+    .getInfo() -- a province-wide reduceRegion exceeds GEE's
+    interactive-compute time limit ("Computation timed out"), same class of
+    fix as build_rice_mask.compute_rice_area_hectares."""
+    try:
+        print("Computing stage pixel-count histogram...")
+        histogram_dict = ee.Dictionary(stage_map_to_export.reduceRegion(
+            reducer=ee.Reducer.frequencyHistogram(),
+            geometry=area_of_interest.geometry(),
+            scale=10,
+            maxPixels=1e13,
+            bestEffort=True,
+        ).get('stage'))
+        # Export.table.toAsset can't encode a Dictionary as a feature
+        # property (only simple types like numbers/strings) -- unpack
+        # into one property per stage instead, since stages are always
+        # a fixed 1-5 (see generate_stage_map's classification above).
+        # Export.table.toAsset also rejects features with null geometry;
+        # the geometry itself is meaningless here, only the properties matter.
+        props = {f'stage_{i}': histogram_dict.get(ee.String(str(i)), 0) for i in range(1, 6)}
+        result_fc = ee.FeatureCollection([ee.Feature(ee.Geometry.Point([0, 0]), props)])
+        scratch_asset_id = f'projects/{GEE_PROJECT_ID}/assets/_scratch_stage_histogram'
+        try:
+            ee.data.deleteAsset(scratch_asset_id)
+        except ee.EEException:
+            pass
+        hist_task = ee.batch.Export.table.toAsset(
+            collection=result_fc, description='stage_histogram_scratch', assetId=scratch_asset_id
+        )
+        poll_task(hist_task, label='compute stage histogram (batch)')
+        row = ee.FeatureCollection(scratch_asset_id).first().toDictionary().getInfo()
+        try:
+            ee.data.deleteAsset(scratch_asset_id)
+        except ee.EEException:
+            pass
+        histogram = {
+            int(key.split('_')[1]): value
+            for key, value in row.items()
+            if key.startswith('stage_') and value
+        }
+        if histogram:
+            dominant_stage = max(histogram, key=histogram.get)
+            print(f"  Dominant stage: {dominant_stage} (counts: {histogram})")
+            return dominant_stage, histogram
+        return None, None
+    except Exception as hist_err:
+        print(f"⚠️ Could not compute stage histogram: {hist_err}")
+        return None, None
+
+
 def merge_geotiffs_in_directory(input_dir, output_dir, date_str):
     os.makedirs(output_dir, exist_ok=True)
     tiff_parts = [os.path.join(input_dir, f) for f in os.listdir(input_dir) if f.endswith('.tif')]
@@ -229,74 +301,11 @@ def fetch_and_process_latest_stage_map():
             print(f"👍 Stage tiles for {target_date_str_file} already exist. Skipping job.")
             return
 
-        print("Defining area of interest and loading assets...")
-        area_of_interest = get_punjab_aoi()
+        print("Defining area of interest and loading assets, training classifier...")
+        area_of_interest, stage_map_to_export = build_classifier_and_stage_map(target_date_str_gee, prediction_year)
+        print("Classifier trained, stage map graph built.")
 
-        training_table = ee.FeatureCollection(settings.GEE_DSS_TRAINING_TABLE_ASSET_ID)
-        rice_map = get_rice_mask_image(settings.GEE_RICE_MASK_ASSET_ID)
-        rice_mask = rice_map.eq(1)
-        BANDS = ['NDVI', 'NDWI', 'VH', 'VV', 'VH_VV_ratio', 'day_of_year', 'days_since_season_start']
-        LABEL = 'DSS'
-
-        print("Training Random Forest classifier...")
-        training_data = training_table.filter(ee.Filter.notNull(BANDS + [LABEL])).select(BANDS + [LABEL])
-        classifier_params = {'numberOfTrees': 150, 'minLeafPopulation': 10, 'maxNodes': 128, 'bagFraction': 0.5, 'seed': 42}
-        classifier = ee.Classifier.smileRandomForest(**classifier_params).train(features=training_data, classProperty=LABEL, inputProperties=BANDS)
-        print("Classifier trained successfully.")
-
-        print(f"Generating stage map for {target_date_str_gee}...")
-        stage_map_to_export = generate_stage_map(target_date_str_gee, classifier, area_of_interest, rice_mask, prediction_year)
-
-        dominant_stage = None
-        stage_pixel_counts = None
-        try:
-            print("Computing stage pixel-count histogram...")
-            # A direct .getInfo() here worked fine over the old Hafizabad-only
-            # AOI, but times out ("Computation timed out") over a province-
-            # wide area -- GEE's interactive-compute cluster has a time limit
-            # that a full-Punjab reduceRegion blows through. Route it through
-            # the batch cluster instead (async export + poll), same fix as
-            # build_rice_mask.compute_rice_area_hectares.
-            histogram_dict = ee.Dictionary(stage_map_to_export.reduceRegion(
-                reducer=ee.Reducer.frequencyHistogram(),
-                geometry=area_of_interest.geometry(),
-                scale=10,
-                maxPixels=1e13,
-                bestEffort=True,
-            ).get('stage'))
-            # Export.table.toAsset can't encode a Dictionary as a feature
-            # property (only simple types like numbers/strings) -- unpack
-            # into one property per stage instead, since stages are always
-            # a fixed 1-5 (see generate_stage_map's classification above).
-            # Export.table.toAsset also rejects features with null geometry;
-            # the geometry itself is meaningless here, only the properties matter.
-            props = {f'stage_{i}': histogram_dict.get(ee.String(str(i)), 0) for i in range(1, 6)}
-            result_fc = ee.FeatureCollection([ee.Feature(ee.Geometry.Point([0, 0]), props)])
-            scratch_asset_id = f'projects/{GEE_PROJECT_ID}/assets/_scratch_stage_histogram'
-            try:
-                ee.data.deleteAsset(scratch_asset_id)
-            except ee.EEException:
-                pass
-            hist_task = ee.batch.Export.table.toAsset(
-                collection=result_fc, description='stage_histogram_scratch', assetId=scratch_asset_id
-            )
-            poll_task(hist_task, label='compute stage histogram (batch)')
-            row = ee.FeatureCollection(scratch_asset_id).first().toDictionary().getInfo()
-            try:
-                ee.data.deleteAsset(scratch_asset_id)
-            except ee.EEException:
-                pass
-            histogram = {
-                int(key.split('_')[1]): value
-                for key, value in row.items()
-                if key.startswith('stage_') and value
-            }
-            if histogram:
-                stage_pixel_counts = histogram
-                dominant_stage = max(stage_pixel_counts, key=stage_pixel_counts.get)
-                print(f"  Dominant stage: {dominant_stage} (counts: {stage_pixel_counts})")
-        except Exception as hist_err:
-            print(f"⚠️ Could not compute stage histogram: {hist_err}")
+        dominant_stage, stage_pixel_counts = compute_stage_histogram(stage_map_to_export, area_of_interest)
 
         export_filename = f'Punjab_Stages_{target_date_str_file}'
         print(f"Starting GEE export task: '{export_filename}'...")

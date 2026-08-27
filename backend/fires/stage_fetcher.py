@@ -12,7 +12,7 @@ import concurrent.futures
 from django.conf import settings
 
 # --- Shared GEE helpers ---
-from .gee_assets.common import get_punjab_aoi, get_rice_mask_image, poll_task
+from .gee_assets.common import get_punjab_aoi, get_rice_mask_image
 from .blob_storage import upload_png
 # Note: StageTileDate (a Django model) is deliberately NOT imported at module
 # level. This module is re-imported fresh inside each ProcessPoolExecutor
@@ -137,46 +137,70 @@ def build_classifier_and_stage_map(target_date_str_gee, prediction_year):
 
 def compute_stage_histogram(stage_map_to_export, area_of_interest):
     """Returns (dominant_stage, stage_pixel_counts) or (None, None) on
-    failure. Runs as an async batch export + poll rather than a synchronous
-    .getInfo() -- a province-wide reduceRegion exceeds GEE's
-    interactive-compute time limit ("Computation timed out"), same class of
-    fix as build_rice_mask.compute_rice_area_hectares."""
+    failure. Computed per-district and summed client-side rather than one
+    province-wide reduceRegion -- even routed through an async batch export
+    (the original fix for GEE's interactive-compute time limit), a single
+    province-wide reduceRegion reliably stalled in READY for hours with zero
+    progress on GEE's free-tier batch queue. Each per-district reduceRegion
+    is much closer in size to the original Hafizabad-pilot AOI, which always
+    completed quickly -- same class of fix as
+    build_rice_mask.export_rice_mask_by_district."""
+    from .gee_assets.common import district_asset_slug, get_punjab_district_names, poll_tasks
+
     try:
-        print("Computing stage pixel-count histogram...")
-        histogram_dict = ee.Dictionary(stage_map_to_export.reduceRegion(
-            reducer=ee.Reducer.frequencyHistogram(),
-            geometry=area_of_interest.geometry(),
-            scale=10,
-            maxPixels=1e13,
-            bestEffort=True,
-        ).get('stage'))
-        # Export.table.toAsset can't encode a Dictionary as a feature
-        # property (only simple types like numbers/strings) -- unpack
-        # into one property per stage instead, since stages are always
-        # a fixed 1-5 (see generate_stage_map's classification above).
-        # Export.table.toAsset also rejects features with null geometry;
-        # the geometry itself is meaningless here, only the properties matter.
-        props = {f'stage_{i}': histogram_dict.get(ee.String(str(i)), 0) for i in range(1, 6)}
-        result_fc = ee.FeatureCollection([ee.Feature(ee.Geometry.Point([0, 0]), props)])
-        scratch_asset_id = f'projects/{GEE_PROJECT_ID}/assets/_scratch_stage_histogram'
-        try:
-            ee.data.deleteAsset(scratch_asset_id)
-        except ee.EEException:
-            pass
-        hist_task = ee.batch.Export.table.toAsset(
-            collection=result_fc, description='stage_histogram_scratch', assetId=scratch_asset_id
-        )
-        poll_task(hist_task, label='compute stage histogram (batch)')
-        row = ee.FeatureCollection(scratch_asset_id).first().toDictionary().getInfo()
-        try:
-            ee.data.deleteAsset(scratch_asset_id)
-        except ee.EEException:
-            pass
-        histogram = {
-            int(key.split('_')[1]): value
-            for key, value in row.items()
-            if key.startswith('stage_') and value
-        }
+        print("Computing stage pixel-count histogram (per district)...")
+        district_names = get_punjab_district_names()
+
+        tasks_by_label = {}
+        asset_ids = {}
+        for name in district_names:
+            slug = district_asset_slug(name)
+            asset_id = f'projects/{GEE_PROJECT_ID}/assets/_scratch_stage_histogram_{slug}'
+            asset_ids[name] = asset_id
+            district_geom = area_of_interest.filter(ee.Filter.eq('ADM2_NAME', name)).geometry()
+            histogram_dict = ee.Dictionary(stage_map_to_export.reduceRegion(
+                reducer=ee.Reducer.frequencyHistogram(),
+                geometry=district_geom,
+                scale=10,
+                maxPixels=1e13,
+                bestEffort=True,
+            ).get('stage'))
+            # Export.table.toAsset can't encode a Dictionary as a feature
+            # property (only simple types like numbers/strings) -- unpack
+            # into one property per stage instead, since stages are always
+            # a fixed 1-5 (see generate_stage_map's classification above).
+            # Export.table.toAsset also rejects features with null geometry;
+            # the geometry itself is meaningless here, only the properties matter.
+            props = {f'stage_{i}': histogram_dict.get(ee.String(str(i)), 0) for i in range(1, 6)}
+            result_fc = ee.FeatureCollection([ee.Feature(ee.Geometry.Point([0, 0]), props)])
+            try:
+                ee.data.deleteAsset(asset_id)
+            except ee.EEException:
+                pass
+            tasks_by_label[name] = ee.batch.Export.table.toAsset(
+                collection=result_fc, description=f'stage_histogram_{slug}', assetId=asset_id
+            )
+
+        results = poll_tasks(tasks_by_label)
+        failed = {name: status for name, status in results.items() if status['state'] != 'COMPLETED'}
+        if failed:
+            print(f"⚠️ {len(failed)} district histogram task(s) did not complete: {list(failed.keys())}")
+
+        histogram = {i: 0 for i in range(1, 6)}
+        for name, status in results.items():
+            if status['state'] != 'COMPLETED':
+                continue
+            asset_id = asset_ids[name]
+            row = ee.FeatureCollection(asset_id).first().toDictionary().getInfo()
+            for key, value in row.items():
+                if key.startswith('stage_') and value:
+                    histogram[int(key.split('_')[1])] += value
+            try:
+                ee.data.deleteAsset(asset_id)
+            except ee.EEException:
+                pass
+
+        histogram = {stage: count for stage, count in histogram.items() if count}
         if histogram:
             dominant_stage = max(histogram, key=histogram.get)
             print(f"  Dominant stage: {dominant_stage} (counts: {histogram})")

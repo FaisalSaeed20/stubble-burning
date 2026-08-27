@@ -29,7 +29,6 @@ from google.auth.transport.requests import Request, AuthorizedSession
 # --- Tiling Imports ---
 from rio_tiler.io import Reader
 from rio_tiler.models import ImageData
-from rasterio.merge import merge
 
 # =================================================================================
 # ⭐️ Section 1: Configuration & Setup
@@ -223,11 +222,28 @@ def merge_geotiffs_in_directory(input_dir, output_dir, date_str):
     output_file = os.path.join(output_dir, f"Punjab_Stages_Merged_{date_str}.tif")
     print(f"Merging {len(tiff_parts)} GeoTIFF parts into '{output_file}'...")
     sources_to_merge = [rasterio.open(fp) for fp in tiff_parts]
-    mosaic, out_trans = merge(sources_to_merge)
+
+    # rasterio.merge.merge() loads every source array AND the full combined
+    # mosaic array into memory at once -- for a province-scale raster that
+    # reliably OOM-crashes even a 12GB Colab runtime (the crash is silent
+    # from this script's point of view; the notebook just gets killed and
+    # restarted mid-cell). Parts here are known to be a non-overlapping grid
+    # (GEE's own export tiling), so each one can be written straight into its
+    # destination window on disk instead -- only one source array is ever
+    # in memory at a time.
+    res_x, res_y = sources_to_merge[0].res
+    left = min(src.bounds.left for src in sources_to_merge)
+    bottom = min(src.bounds.bottom for src in sources_to_merge)
+    right = max(src.bounds.right for src in sources_to_merge)
+    top = max(src.bounds.top for src in sources_to_merge)
+    width = round((right - left) / res_x)
+    height = round((top - bottom) / res_y)
+    out_transform = rasterio.transform.from_origin(left, top, res_x, res_y)
+
     out_meta = sources_to_merge[0].meta.copy()
     out_meta.update({
-        "driver": "GTiff", "height": mosaic.shape[1], "width": mosaic.shape[2],
-        "transform": out_trans, "crs": sources_to_merge[0].crs, "compress": "lzw",
+        "driver": "GTiff", "height": height, "width": width,
+        "transform": out_transform, "crs": sources_to_merge[0].crs, "compress": "lzw",
         # Without internal tiling, GDAL writes one full-width strip per row --
         # reading a single 256x256 output tile from a province-scale raster
         # then forces a read of the entire row width for every row touched.
@@ -239,9 +255,12 @@ def merge_geotiffs_in_directory(input_dir, output_dir, date_str):
         "tiled": True, "blockxsize": 256, "blockysize": 256,
     })
     with rasterio.open(output_file, "w", **out_meta) as dest:
-        dest.write(mosaic)
-    for src in sources_to_merge:
-        src.close()
+        for src in sources_to_merge:
+            col_off = round((src.bounds.left - left) / res_x)
+            row_off = round((top - src.bounds.top) / res_y)
+            window = rasterio.windows.Window(col_off, row_off, src.width, src.height)
+            dest.write(src.read(), window=window)
+            src.close()
     print(f"✅ Successfully created merged file: {output_file}")
     return output_file
 

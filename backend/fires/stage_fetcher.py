@@ -301,7 +301,15 @@ def generate_tiles_for_file(geotiff_path, date_str):
             all_tiles_to_process.extend(mercantile.tiles(*bounds, zooms=[zoom]))
     tasks = [(geotiff_path, tile, gcs_prefix, date_str) for tile in all_tiles_to_process]
     print(f"Generating {len(tasks)} tiles using {MAX_WORKERS} workers...")
-    with concurrent.futures.ProcessPoolExecutor(max_workers=MAX_WORKERS) as executor:
+    # max_tasks_per_child periodically recycles each worker process instead of
+    # keeping the same one alive for the whole run -- a province-wide job at
+    # zoom 6-13 opens the merged raster hundreds of thousands of times across
+    # a run lasting over an hour, and any small per-open leak in GDAL's/
+    # rio-tiler's internal caching compounds over that many repeated opens in
+    # a single long-lived process until it OOM-crashes the whole runtime late
+    # in the run (observed: died mid-zoom-13 after ~1h of otherwise-successful
+    # uploads). Recycling bounds how much any such leak can accumulate.
+    with concurrent.futures.ProcessPoolExecutor(max_workers=MAX_WORKERS, max_tasks_per_child=1000) as executor:
         results = list(executor.map(_process_tile_worker, tasks))
     success_count = results.count("success")
     skipped_count = results.count("skipped")

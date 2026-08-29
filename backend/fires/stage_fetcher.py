@@ -49,7 +49,13 @@ FINAL_TILES_GCS_PREFIX = settings.B2_STAGE_TILES_PREFIX
 # --- Tiling Configuration ---
 ZOOM_LEVELS = range(6, 14)
 CPU_CORES = os.cpu_count() or 1
-MAX_WORKERS = max(1, CPU_CORES // 2)
+# Each tile task is mostly waiting on network I/O (the B2 upload), not CPU --
+# a province-wide job at zoom 6-13 is hundreds of thousands of small tiles,
+# so capping workers at CPU_CORES // 2 (1 worker on a typical 2-vCPU free
+# Colab/cloud runtime) serializes nearly the whole job and turns it into a
+# many-hour run. Oversubscribing well past the CPU count is standard for
+# I/O-bound work like this.
+MAX_WORKERS = max(8, CPU_CORES)
 
 # --- Color Map for Tiling ---
 COLOR_MAP = {

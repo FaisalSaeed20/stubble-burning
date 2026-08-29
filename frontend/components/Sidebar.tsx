@@ -99,20 +99,33 @@ export default function Sidebar({
       {/* District filter */}
       <div className="mb-6">
         <p className="font-medium text-gray-700 mb-2">District</p>
-        <select
-          className="w-full rounded-md p-2 border border-gray-300"
-          value={selectedDistrict}
-          onChange={(e) => onDistrictChange(e.target.value)}
-        >
-          <option value="">All Punjab</option>
+        <div className="rounded-md border border-gray-300 bg-white max-h-56 overflow-y-auto">
+          <button
+            className={`w-full text-left px-3 py-1.5 text-sm border-b ${
+              selectedDistrict === ''
+                ? 'bg-blue-500 text-white font-medium'
+                : 'hover:bg-gray-50 text-gray-700'
+            }`}
+            onClick={() => onDistrictChange('')}
+          >
+            All Punjab
+          </button>
           {districts.map((d) => (
-            <option key={d} value={d}>
+            <button
+              key={d}
+              className={`w-full text-left px-3 py-1.5 text-sm border-b last:border-b-0 ${
+                selectedDistrict === d
+                  ? 'bg-blue-500 text-white font-medium'
+                  : 'hover:bg-gray-50 text-gray-700'
+              }`}
+              onClick={() => onDistrictChange(d)}
+            >
               {d}
-            </option>
+            </button>
           ))}
-        </select>
+        </div>
         <p className="mt-1 text-xs text-gray-500">
-          Choosing a district will zoom the map to its boundary.
+          Choosing a district shows only that district's map and fire points.
         </p>
       </div>
 

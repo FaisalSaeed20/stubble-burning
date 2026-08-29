@@ -69,7 +69,7 @@ export default function ProvincialSummary() {
                 ? summary.at_risk_hectares.toLocaleString(undefined, { maximumFractionDigits: 2 })
                 : '—'
             }
-            sublabel={summary.at_risk_hectares != null ? 'Hafizabad District rice cropland' : undefined}
+            sublabel={summary.at_risk_hectares != null ? 'Punjab-wide rice cropland' : undefined}
             isPlaceholder={summary.at_risk_hectares == null}
             placeholderNote="Run `manage.py build_rice_mask` to compute this"
           />

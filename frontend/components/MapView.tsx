@@ -11,6 +11,7 @@ import FireReport from './FireReport';
 import { API_BASE_URL } from '../lib/api';
 import MarkerClusterLayer from './MarkerClusterLayer';
 import { norm, getFeatureName } from '../lib/districtNames';
+import { pointInGeometry } from '../lib/geo';
 // Chart.js
 import { Line } from 'react-chartjs-2';
 import {
@@ -177,8 +178,8 @@ export default function MapView() {
 
   // District state
   const [districts, setDistricts] = useState<string[]>([]);
-// This is the new line
-const [selectedDistrict, setSelectedDistrict] = useState<string>('Hafizabad District');  const [districtGeo, setDistrictGeo] = useState<DistrictGeo | null>(null);
+  const [selectedDistrict, setSelectedDistrict] = useState<string>('');
+  const [districtGeo, setDistrictGeo] = useState<DistrictGeo | null>(null);
 
   // NEW: Stage layer state
   const [stageData, setStageData] = useState<StageData | null>(null);
@@ -261,6 +262,22 @@ const [selectedDistrict, setSelectedDistrict] = useState<string>('Hafizabad Dist
   const s2ChartData = useMemo(() => generateChartData(selectedPoint, S2_METRICS), [selectedPoint]);
   const s1ChartData = useMemo(() => generateChartData(selectedPoint, S1_METRICS), [selectedPoint]);
 
+  // When a district is selected, restrict the map to only that district's
+  // fire points -- keeps the full time-series data each point already
+  // carries (needed for the chart panels), just filtered client-side by
+  // membership in the selected district's polygon rather than re-fetching
+  // a lighter per-district endpoint that doesn't carry that data.
+  const visibleFirePoints = useMemo(() => {
+    if (!selectedDistrict || !districtGeo) return firePoints;
+    const features = districtGeo.features.filter(
+      (f) => norm(getFeatureName(f.properties)) === norm(selectedDistrict)
+    );
+    if (!features.length) return firePoints;
+    return firePoints.filter((p) =>
+      features.some((f) => pointInGeometry(p.longitude, p.latitude, f.geometry))
+    );
+  }, [firePoints, selectedDistrict, districtGeo]);
+
   // Determine which stage date to show
   const activeStageDate = showCurrentStage && stageData?.latest 
     ? stageData.latest 
@@ -319,7 +336,7 @@ const [selectedDistrict, setSelectedDistrict] = useState<string>('Hafizabad Dist
           <ZoomTracker onZoom={(z) => setZoomLevel(z)} />
 
           {/* Fit & outline district when selected */}
-          <DistrictFit selected={selectedDistrict} geo={districtGeo} showOutline ={false}/>
+          <DistrictFit selected={selectedDistrict} geo={districtGeo} showOutline={true} />
 
           <TileLayer
             url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
@@ -344,7 +361,7 @@ const [selectedDistrict, setSelectedDistrict] = useState<string>('Hafizabad Dist
           )}
 
           {/* Clustered Fire Points */}
-          <MarkerClusterLayer firePoints={firePoints} onPointSelect={setSelectedPoint} />
+          <MarkerClusterLayer firePoints={visibleFirePoints} onPointSelect={setSelectedPoint} />
         {/* --- NEW HEATMAP LAYERS --- */}
           {showCO && (
             <TileLayer
@@ -479,7 +496,9 @@ const [selectedDistrict, setSelectedDistrict] = useState<string>('Hafizabad Dist
             </div>
           </div>
           <div className="mt-3 pt-2 border-t">
-            <p className="text-xs text-gray-600">📊 Total Fire Points: {firePoints.length}</p>
+            <p className="text-xs text-gray-600">
+              📊 {selectedDistrict ? `${selectedDistrict} Fire Points` : 'Total Fire Points'}: {visibleFirePoints.length}
+            </p>
           </div>
         </div>
 

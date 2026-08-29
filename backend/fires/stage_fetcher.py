@@ -4,6 +4,7 @@ import time
 import datetime
 import shutil
 import rasterio
+from rasterio.enums import Resampling
 import mercantile
 import traceback
 import concurrent.futures
@@ -47,7 +48,13 @@ MERGED_DIR = os.path.join(settings.BASE_DIR, 'merged_geotiffs')
 FINAL_TILES_GCS_PREFIX = settings.B2_STAGE_TILES_PREFIX
 
 # --- Tiling Configuration ---
-ZOOM_LEVELS = range(6, 14)
+# Zoom 12-13 (~1200m/~600m per tile) is close to street-level detail --
+# for a province-wide crop-stage overlay that's far more resolution than
+# useful, while accounting for most of the total tile count (each zoom
+# level roughly quadruples the tiles of the one before it). Capping at 11
+# cuts total tiles/runtime by roughly an order of magnitude for every run,
+# not just this one.
+ZOOM_LEVELS = range(6, 12)
 CPU_CORES = os.cpu_count() or 1
 # Each tile task is mostly waiting on network I/O (the B2 upload), not CPU --
 # a province-wide job at zoom 6-13 is hundreds of thousands of small tiles,
@@ -267,6 +274,12 @@ def merge_geotiffs_in_directory(input_dir, output_dir, date_str):
             window = rasterio.windows.Window(col_off, row_off, src.width, src.height)
             dest.write(src.read(), window=window)
             src.close()
+        # Without overviews, every tile read at low zoom still decodes from
+        # the full-resolution data -- rio-tiler warns on this per read (once
+        # per tile, i.e. hundreds of thousands of times over a tiling run)
+        # and is measurably slower doing it. Building them once here instead
+        # costs a few seconds and removes both problems.
+        dest.build_overviews([2, 4, 8, 16, 32], Resampling.nearest)
     print(f"✅ Successfully created merged file: {output_file}")
     return output_file
 

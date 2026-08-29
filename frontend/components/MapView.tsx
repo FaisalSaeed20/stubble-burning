@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState, useRef } from 'react';
-import { MapContainer, TileLayer, useMapEvents, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, Polygon, useMapEvents, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import icon from 'leaflet/dist/images/marker-icon.png';
@@ -118,6 +118,47 @@ type DistrictGeo = {
 function ZoomTracker({ onZoom }: { onZoom: (z: number) => void }) {
   useMapEvents({ zoomend: (e) => onZoom(e.target.getZoom()) });
   return null;
+}
+
+// World-covering rectangle used as the mask's outer ring -- punching the
+// selected district's own shape out of it as a hole leaves everything
+// else (base map, rice/stage overlays) dimmed, so only that district's
+// actual area (not just its bounding box) reads as "shown".
+const WORLD_RING: Array<[number, number]> = [
+  [-90, -180],
+  [-90, 180],
+  [90, 180],
+  [90, -180],
+];
+
+function districtHoleRings(features: DistrictGeo['features']): Array<Array<[number, number]>> {
+  const rings: Array<Array<[number, number]>> = [];
+  for (const f of features) {
+    const geom = f.geometry;
+    if (geom.type === 'Polygon') {
+      rings.push(geom.coordinates[0].map(([lng, lat]: [number, number]) => [lat, lng]));
+    } else if (geom.type === 'MultiPolygon') {
+      for (const part of geom.coordinates) {
+        rings.push(part[0].map(([lng, lat]: [number, number]) => [lat, lng]));
+      }
+    }
+  }
+  return rings;
+}
+
+function DistrictMask({ selected, geo }: { selected: string; geo: DistrictGeo | null }) {
+  if (!selected || !geo) return null;
+  const features = geo.features.filter((f) => norm(getFeatureName(f.properties)) === norm(selected));
+  if (!features.length) return null;
+  const holes = districtHoleRings(features);
+  if (!holes.length) return null;
+  return (
+    <Polygon
+      positions={[WORLD_RING, ...holes] as any}
+      pathOptions={{ stroke: false, fillColor: '#0f172a', fillOpacity: 0.55 }}
+      interactive={false}
+    />
+  );
 }
 
 function DistrictFit({
@@ -337,6 +378,9 @@ export default function MapView() {
 
           {/* Fit & outline district when selected */}
           <DistrictFit selected={selectedDistrict} geo={districtGeo} showOutline={true} />
+
+          {/* Dim everything outside the selected district's actual shape */}
+          <DistrictMask selected={selectedDistrict} geo={districtGeo} />
 
           <TileLayer
             url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
